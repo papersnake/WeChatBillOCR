@@ -37,11 +37,8 @@ env/
 .DS_Store
 
 # Project generated output
-output/*.csv
-output/*.json
-output/*.png
-output/*.jpg
-output/*.jpeg
+output/*
+!output/.gitkeep
 
 # Installer packages (extracted tools live elsewhere)
 setup/
