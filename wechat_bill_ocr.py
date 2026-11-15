@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, date
 
 # ==================== 配置 ====================
@@ -42,6 +42,12 @@ TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 DEVICE = None
 SCREEN_WIDTH = 1080
 SCREEN_HEIGHT = 2400
+
+# 列表可视区：上沿 = 屏高 × LIST_TOP_RATIO（固定头部之下），下沿 = 屏高 - EDGE_BOTTOM_PX。
+# 整行没有完整落在可视区内的条目（被上/下边缘裁切）OCR 经常读坏，直接不采用，
+# 等它在下一屏完整出现时再记录。
+LIST_TOP_RATIO = 0.18
+EDGE_BOTTOM_PX = 24
 
 
 # ==================== 命令行参数 ====================
@@ -167,6 +173,19 @@ def screenshot():
     return SHOT_FILE
 
 
+def png_size(path):
+    """读 PNG 头部得到截图真实 (宽, 高)；读不到返回 None。
+    不能只信 wm size：有 Override size 时它和截图尺寸不一致。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+    except OSError:
+        return None
+    if head[:8] != b"\x89PNG\r\n\x1a\n" or len(head) < 24:
+        return None
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
 def scroll_up():
     """向上滚动一屏"""
     x = SCREEN_WIDTH // 2
@@ -274,8 +293,22 @@ def parse_time(text, year, month):
         return None
 
 
-def parse_records(items, current_year_month=None):
-    """从 OCR 结果中解析账单记录，返回 (records, detected_year_month)"""
+def resolve_year(ref_year, ref_month, time_text):
+    """条目年份 = 参考标题年月附近、与条目自身月份最接近的那一年。
+    跨年时 1 月的条目会排在 12 月标题上方（或作为残留出现在下一屏顶部），
+    不能直接套用标题年份。"""
+    m = TIME_RE.search(time_text)
+    if not m or not ref_year or not ref_month:
+        return ref_year
+    item_month = int(m.group(1).split("月")[0])
+    return min((ref_year - 1, ref_year, ref_year + 1),
+               key=lambda y: abs((y * 12 + item_month) - (ref_year * 12 + ref_month)))
+
+
+def parse_records(items, current_year_month=None, view=None):
+    """从 OCR 结果中解析账单记录，返回 (records, detected_year_month)。
+    view=(top, bottom) 给出列表可视区纵坐标；整行没有完整落在其中的条目
+    （被屏幕上/下边缘裁切，OCR 容易读坏）会被丢弃。view=None 则不做此过滤。"""
     records = []
     detected_year_month = current_year_month
 
@@ -294,27 +327,31 @@ def parse_records(items, current_year_month=None):
             continue
         filtered.append(it)
 
-    # 收集月份标题及其 y 坐标。detected_year_month 保留屏幕最后一个（最旧）
-    # 标题，供下一屏顶部无标题的残留条目兜底。
+    # 上一屏最后一个（最旧）标题：本屏完全没有标题时，条目沿用它。
+    # 必须在下面更新 detected_year_month 之前取值。
+    carry_over = current_year_month
+
+    # 收集月份标题及其 y 坐标。detected_year_month 取本屏最靠下（最旧）的标题，
+    # 交给下一屏兜底；按 y 排序，不依赖 OCR 返回顺序。
     titles = []
     for it in filtered:
         y, m = parse_month_title(it["text"])
         if y and m:
             titles.append((block_center_y(it["box"]), (y, m)))
-            detected_year_month = (y, m)
             print(f"  [月份标题] {y}年{m}月")
-
-    carry_over = detected_year_month  # 上一屏遗留的月份（本屏顶部残留条目用）
+    titles.sort()
+    if titles:
+        detected_year_month = titles[-1][1]
 
     def month_for(y_pos):
-        """条目所属年月 = 其上方最近的标题（微信账单月份标题在条目组上方）；
-        上方没有标题（滚动后上月条目残留在屏顶）则沿用上一屏结果。"""
-        best = None
-        for ty, ym in titles:
-            if ty < y_pos and (best is None or ty > best[0]):
-                best = (ty, ym)
-        if best:
-            return best[1]
+        """年月参考标题：条目上方最近的标题（月份标题在条目组上方）；
+        屏顶残留条目上方没有标题，改用其下方最近的标题；本屏无标题则沿用上一屏。
+        这只是参考，条目的真实年份由 resolve_year 结合条目自己的月份推断。"""
+        above = [t for t in titles if t[0] < y_pos]
+        if above:
+            return above[-1][1]
+        if titles:
+            return titles[0][1]
         return carry_over or (None, None)
 
     # 按 y 坐标分组（同一账单条目在同一水平区域）
@@ -353,7 +390,20 @@ def parse_records(items, current_year_month=None):
         if time_candidates:
             time_candidates.sort(key=lambda x: abs(block_center_y(x["box"]) - amt_y))
             time_str = time_candidates[0]["text"]
-            dt = parse_time(time_str, e_year, e_month)
+            dt = parse_time(time_str, resolve_year(e_year, e_month, time_str), e_month)
+
+        # 整行（描述/金额/时间）必须完整落在可视区内，否则视为被裁切，等下一屏再记
+        if view:
+            row_boxes = [amt_it["box"]]
+            if desc_candidates:
+                row_boxes.append(desc_candidates[0]["box"])
+            if time_candidates:
+                row_boxes.append(time_candidates[0]["box"])
+            row_top = min(p[1] for b in row_boxes for p in b[:4])
+            row_bottom = max(p[1] for b in row_boxes for p in b[:4])
+            if row_top < view[0] or row_bottom > view[1]:
+                print(f"  [贴边丢弃] {desc} | {raw_amt} | {time_str}")
+                continue
 
         # 符号规则：OCR 读出的 +/- 最可信，优先信任；
         # 无符号时按描述判断：收入描述集合有限（退款/收款/红包等），
@@ -380,12 +430,47 @@ def parse_records(items, current_year_month=None):
     return records, detected_year_month
 
 
+# ==================== 跨屏去重 ====================
+def _when(r):
+    """时间（月日+时分），与年份推断无关，OCR 对数字也最稳定"""
+    m = TIME_RE.search(r["time"])
+    return (m.group(1), m.group(2)) if m else normalize_desc(r["time"])
+
+
+def same_record(a, b):
+    """同一条账单：时间精确到分钟、金额绝对值都相同。
+    描述不参与判定——被屏幕边缘裁切的行，描述最容易被读少一个字或读成头像文字。"""
+    return _when(a) == _when(b) and abs(abs(a["amount"]) - abs(b["amount"])) < 0.005
+
+
+def match_overlap(cur, pool):
+    """把本屏记录 cur 与已记录的 pool 一一配对，返回与 cur 等长的列表，
+    配上的元素是 pool 里的那条记录，没配上的是 None（即新记录）。
+    每条 pool 记录至多被消耗一次，所以同一分钟内两笔相同金额的真实账单不会被误合并。
+    先配描述也相同的，再配仅时间+金额相同的。"""
+    pairs = [None] * len(cur)
+    used = set()
+    for need_same_desc in (True, False):
+        for i, r in enumerate(cur):
+            if pairs[i] is not None:
+                continue
+            for j, p in enumerate(pool):
+                if j in used or not same_record(r, p):
+                    continue
+                if need_same_desc and normalize_desc(r["desc"]) != normalize_desc(p["desc"]):
+                    continue
+                pairs[i] = p
+                used.add(j)
+                break
+    return pairs
+
+
 # ==================== 主流程 ====================
 def collect_bills(start_date=None, end_date=None, max_scrolls=100, all_records=None):
     """循环截图 OCR 抓取账单。all_records 可由外部传入，中断时已抓数据不丢"""
     if all_records is None:
         all_records = []
-    seen_keys = set()
+    recent_screens = deque(maxlen=2)  # 最近两屏的记录，去重时作为配对池
     no_new_count = 0
     skipped_no_parse = 0
     current_year_month = None
@@ -406,9 +491,13 @@ def collect_bills(start_date=None, end_date=None, max_scrolls=100, all_records=N
             print("OCR 未识别到内容，跳过")
             continue
 
-        records, current_year_month = parse_records(items, current_year_month)
+        size = png_size(path)
+        screen_h = size[1] if size else SCREEN_HEIGHT
+        view = (screen_h * LIST_TOP_RATIO, screen_h - EDGE_BOTTOM_PX)
+        records, current_year_month = parse_records(items, current_year_month, view=view)
         new_count = 0
         early_stop = False
+        screen_records = []  # 本屏通过日期过滤、描述和时间都配对成功的记录
 
         for r in records:
             # 日期范围过滤
@@ -424,18 +513,28 @@ def collect_bills(start_date=None, end_date=None, max_scrolls=100, all_records=N
                 except Exception:
                     pass
 
-            key = (normalize_desc(r["desc"]),
-                   r["datetime"] or normalize_desc(r["time"]),
-                   round(r["amount"], 2))
             if not (r["desc"] and r["time"]):
                 # 描述或时间没配对上，无法去重也无法过滤日期，跳过并计数
                 skipped_no_parse += 1
                 continue
-            if key not in seen_keys:
-                seen_keys.add(key)
+            screen_records.append(r)
+
+        # 与最近两屏的记录配对：配上的是滚动重叠区里的同一条账单，没配上的才是新增
+        pool = list({id(p): p for prev in recent_screens for p in prev}.values())
+        pairs = match_overlap(screen_records, pool)
+        if pool and screen_records and all(p is None for p in pairs):
+            print("  [警告] 本屏与前两屏没有任何重叠，滚动距离可能过大，两屏之间可能漏记条目")
+        kept = []
+        for r, p in zip(screen_records, pairs):
+            if p is None:
                 all_records.append(r)
+                kept.append(r)
                 new_count += 1
                 print(f"  + {r['desc']} | {r['amount']:.2f} | {r['time']}")
+            else:
+                kept.append(p)
+        if kept:
+            recent_screens.append(kept)
 
         print(f"本屏新增 {new_count} 条，累计 {len(all_records)} 条")
 

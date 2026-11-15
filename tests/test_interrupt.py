@@ -6,6 +6,8 @@ import sys
 sys.path.insert(0, r"E:\rou")
 import wechat_bill_ocr as w
 
+w.SCREEN_HEIGHT = 2736  # 样本截图来自 1264x2736 的屏幕；假截图没有 PNG 头，用此值算可视区
+
 items = json.load(open(r"E:\rou\fixtures\sample_bill_items.json", encoding="utf-8"))
 
 real_screenshot = w.screenshot
