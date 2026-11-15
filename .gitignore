@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project generated output
+output/*.csv
+output/*.json
+output/*.png
+output/*.jpg
+output/*.jpeg
+
+# Installer packages (extracted tools live elsewhere)
+setup/
+
+# Large third-party binaries (download during setup)
+Umi-OCR/
+platform-tools/
+scrcpy/
+
+# User-specific runtime state
+last_device.txt
+
+# Logs
+*.log
+
+# User spreadsheets
+*.xlsx
