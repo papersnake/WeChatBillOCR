@@ -61,6 +61,12 @@ Download and extract the following tools into the project root:
 # Last 2 months
 python wechat_bill_ocr.py --months 2
 
+# Today only
+python wechat_bill_ocr.py --today
+
+# Last 7 days (including today)
+python wechat_bill_ocr.py --days 7
+
 # Specific date range
 python wechat_bill_ocr.py --start-date 2024-01-01 --end-date 2024-12-31
 
