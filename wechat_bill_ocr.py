@@ -57,8 +57,38 @@ def parse_args():
     parser.add_argument("--start-date", type=str, help="开始日期，格式 2024-01-01")
     parser.add_argument("--end-date", type=str, help="结束日期，格式 2024-12-31")
     parser.add_argument("--months", type=int, help="统计最近 N 个月（与日期参数互斥）")
+    parser.add_argument("--today", action="store_true", help="只统计今天（与其他范围参数互斥）")
+    parser.add_argument("--days", type=int, help="统计最近 N 天，含今天；--days 1 等同 --today")
     parser.add_argument("--max-scrolls", type=int, default=100, help="最大滚动次数")
     return parser.parse_args()
+
+
+def resolve_date_range(args, today=None):
+    """根据命令行参数算出 (start_date, end_date)，两端都含当天。
+    范围参数 --today / --days / --months / --start-date·--end-date 只能选一种。"""
+    today = today or date.today()
+    kinds = [bool(args.today or args.days is not None), bool(args.months),
+             bool(args.start_date or args.end_date)]
+    if sum(kinds) > 1:
+        raise ValueError("--today/--days、--months、--start-date/--end-date 只能选一种")
+
+    if args.today or args.days is not None:
+        n = 1 if args.today else args.days
+        if n < 1:
+            raise ValueError("--days 必须是 1 以上的整数")
+        return date.fromordinal(today.toordinal() - (n - 1)), today
+
+    if args.months:
+        # 从当前月往前推 N-1 个月，取该月 1 号
+        month = today.month - (args.months - 1)
+        year = today.year
+        while month <= 0:
+            month += 12
+            year -= 1
+        return date(year, month, 1), today
+
+    return (parse_date(args.start_date) if args.start_date else None,
+            parse_date(args.end_date) if args.end_date else None)
 
 
 def parse_date(s):
@@ -624,20 +654,14 @@ def save_results(records, summary):
 def main():
     args = parse_args()
 
-    start_date = parse_date(args.start_date) if args.start_date else None
-    end_date = parse_date(args.end_date) if args.end_date else None
-
-    if args.months:
-        # 最近 N 个月
-        today = date.today()
-        # 从当前月往前推 N-1 个月
-        month = today.month - (args.months - 1)
-        year = today.year
-        while month <= 0:
-            month += 12
-            year -= 1
-        start_date = date(year, month, 1)
-        end_date = today
+    try:
+        start_date, end_date = resolve_date_range(args)
+    except ValueError as e:
+        print(f"参数错误：{e}")
+        return
+    if args.today or args.days is not None:
+        print(f"统计 {start_date} 至 {end_date}")
+    elif args.months:
         print(f"统计最近 {args.months} 个月：{start_date} 至 {end_date}")
 
     # 自动选择/检测设备

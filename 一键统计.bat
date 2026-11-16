@@ -88,13 +88,31 @@ echo [错误] Umi-OCR 启动超时，请手动检查
 exit /b 1
 
 :stats
-set "MONTHS="
-set /p MONTHS=统计最近几个月（直接回车默认2）:
-if "!MONTHS!"=="" set "MONTHS=2"
+echo.
+echo 统计范围:
+echo   [1] 按月（默认）
+echo   [2] 只要今天
+echo   [3] 最近几天（含今天）
+set "MODE="
+set /p MODE=请选择（直接回车选1）:
+set "RANGE="
+if "!MODE!"=="2" set "RANGE=--today"
+if "!MODE!"=="3" (
+    set "DAYS="
+    set /p DAYS=统计最近几天（直接回车默认7）:
+    if "!DAYS!"=="" set "DAYS=7"
+    set "RANGE=--days !DAYS!"
+)
+if "!RANGE!"=="" (
+    set "MONTHS="
+    set /p MONTHS=统计最近几个月（直接回车默认2）:
+    if "!MONTHS!"=="" set "MONTHS=2"
+    set "RANGE=--months !MONTHS!"
+)
 echo.
 if not "!DEV!"=="" (
-    python E:\rou\wechat_bill_ocr.py --device !DEV! --months !MONTHS!
+    python E:\rou\wechat_bill_ocr.py --device !DEV! !RANGE!
 ) else (
-    python E:\rou\wechat_bill_ocr.py --months !MONTHS!
+    python E:\rou\wechat_bill_ocr.py !RANGE!
 )
 exit /b 0
